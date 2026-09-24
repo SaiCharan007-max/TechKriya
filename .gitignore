@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Auto-downloaded YOLO weights
+yolo11n.pt
+*.pt
+
+# User's own test videos (keep the folder, not the footage)
+videos/*
+!videos/.gitkeep
+
+# Stretch-goal navigation cache
+route.json
+
+# Recorded demo output
+*.mp4.bak
+out.mp4
