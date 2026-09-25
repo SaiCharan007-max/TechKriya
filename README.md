@@ -6,8 +6,9 @@ and moving vehicles and speaks **only the most important instruction** into
 the user's earphones (e.g. "Stop. Bike approaching.", "Chair ahead, 2
 metres. Step left.").
 
-This README covers the **core system** (see `CLAUDE.md` for the full spec,
-including the scene-description and simulated-navigation stretch goals).
+This README covers the core system plus both stretch goals: on-demand scene
+description (`describe.py`) and simulated turn-by-turn navigation
+(`navigation.py`). See `CLAUDE.md` for the full spec.
 
 ## 1. Setup
 
@@ -31,9 +32,13 @@ Put 2-3 short first-person street-walking videos in `videos/` (chest-height,
 ## 2. Running
 
 ```bash
-python main.py --source 0                       # webcam
-python main.py --source videos/street1.mp4       # video file (loops at the end)
-python main.py --source videos/street1.mp4 --debug   # print per-object distance/speed/TTC each second
+python main.py --source 0                              # webcam
+python main.py --source videos/street1.mp4              # video file (loops at the end)
+python main.py --source http://192.168.1.42:8080/video  # phone camera over Wi-Fi (IP Webcam app)
+python main.py --source videos/street1.mp4 --debug      # print per-object distance/speed/TTC each second
+
+# with the navigation stretch goal (needs ORS_API_KEY or GOOGLE_MAPS_API_KEY):
+python main.py --source videos/street1.mp4 --start 12.9716,77.5946 --end 12.9760,77.6060
 ```
 
 ### Controls (in the OpenCV window)
@@ -43,8 +48,21 @@ python main.py --source videos/street1.mp4 --debug   # print per-object distance
 | `m` | mute / unmute speech |
 | `r` | repeat the last spoken message |
 | `space` | pause / resume the video |
-| `d` | scene description (stretch goal, not in the core build) |
-| `n` | start simulated route (stretch goal, not in the core build) |
+| `d` | speak an on-demand scene description (needs `ANTHROPIC_API_KEY`) |
+| `n` | start / pause the simulated route (needs `--start`/`--end` and a routing key) |
+
+### Stretch goals
+- **Scene description**: set `ANTHROPIC_API_KEY`, then press `d` any time. A
+  background thread sends the current frame to Claude Haiku and speaks a
+  2-sentence description at INFO priority. With no key set it says
+  "Description not available." instead of failing.
+- **Simulated navigation**: pass `--start`/`--end` as `lat,lon` and set
+  `ORS_API_KEY` (OpenRouteService, free) or `GOOGLE_MAPS_API_KEY`. The route
+  is fetched once and cached to `route.json` so the demo works offline
+  afterwards. Press `n` to start/pause walking the route at 1.3 m/s; turn
+  prompts fire at 25 m and 8 m before each maneuver, fuse with any nearby
+  obstacle ("Turn left after the chair."), and the side panel shows the next
+  turn and a progress bar.
 
 ### What you should see and hear
 - A window titled **Drishti**: your camera/video on the left with a
@@ -68,11 +86,15 @@ python main.py --source videos/street1.mp4 --debug   # print per-object distance
 | `vision.py` | YOLO11n detection + ByteTrack tracking, distance estimate, corridor zones, approach/closing-speed detection |
 | `decision.py` | the priority engine: CRITICAL > OBSTACLE > NAVIGATION > INFO, with anti-chatter cooldowns |
 | `speech.py` | background threaded TTS with a priority queue (SAPI / pyttsx3 / `say`) |
-| `hud.py` | all drawing: corridor, boxes, banner, side panel, decision log |
+| `hud.py` | all drawing: corridor, boxes, banner, side panel, decision log, nav progress bar |
+| `describe.py` | stretch A: on-demand scene description via Claude Haiku |
+| `navigation.py` | stretch B: route fetch/cache + simulated walk + turn prompts |
 | `main.py` | CLI, main loop, keyboard controls |
 
 Each module has a self-test: run it directly, e.g. `python vision.py`,
-`python decision.py`, `python speech.py`, `python hud.py`.
+`python decision.py`, `python speech.py`, `python hud.py`,
+`python navigation.py` (synthetic route, no network needed),
+`python describe.py` (needs `ANTHROPIC_API_KEY` to actually describe anything).
 
 ## 4. Troubleshooting
 
@@ -106,6 +128,16 @@ distance/closing-speed/TTC once a second, and tune the thresholds in
 `config.py`); an object should not repeat within its cooldown unless it
 gets more dangerous (e.g. obstacle -> approaching, or distance drops below
 the stop threshold).
+
+**Scene description says "Description not available"** -- check
+`ANTHROPIC_API_KEY` is set and the `anthropic` package is installed; the
+feature degrades gracefully rather than crashing, so this is expected
+without a key.
+
+**Navigation says "not available" / `n` does nothing** -- pass both
+`--start` and `--end` as `lat,lon`, and set `ORS_API_KEY` or
+`GOOGLE_MAPS_API_KEY`. Delete `route.json` to force a fresh fetch if you
+change the start/end.
 
 ## 5. Out of scope (by design)
 

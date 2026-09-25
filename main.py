@@ -11,8 +11,8 @@ Controls (in the OpenCV window):
     m      mute / unmute speech
     r      repeat last spoken message
     space  pause / resume the video
-    d      scene description (stretch goal -- not built in the core system)
-    n      start simulated route (stretch goal -- not built in the core system)
+    d      speak an on-demand scene description (stretch A, needs ANTHROPIC_API_KEY)
+    n      start / pause the simulated route (stretch B, needs --start/--end and a routing key)
 """
 
 from __future__ import annotations
@@ -27,7 +27,9 @@ import cv2
 
 import config
 import hud
+import navigation
 from decision import DecisionEngine
+from describe import describe_scene_async
 from speech import SpeechEngine
 from vision import VisionPipeline
 
@@ -40,12 +42,40 @@ def parse_args() -> argparse.Namespace:
                          help="Print per-track id/distance/closing_speed/ttc once a second.")
     parser.add_argument("--max-frames", type=int, default=None,
                          help="Stop after N frames (for automated testing).")
+    parser.add_argument("--start", default=None,
+                         help="Stretch B: simulated route start as 'lat,lon'.")
+    parser.add_argument("--end", default=None,
+                         help="Stretch B: simulated route end as 'lat,lon'.")
     return parser.parse_args()
+
+
+def _parse_latlon(text: str) -> tuple:
+    lat_str, lon_str = text.split(",")
+    return (float(lat_str), float(lon_str))
+
+
+def _yields_real_frame(cap) -> bool:
+    if not cap.isOpened():
+        return False
+    ok, frame = cap.read()
+    return bool(ok) and frame is not None and frame.any()
 
 
 def open_source(source_arg: str):
     if source_arg.isdigit():
-        cap = cv2.VideoCapture(int(source_arg))
+        index = int(source_arg)
+        cap = cv2.VideoCapture(index)
+        # On Windows, the default MSMF backend often opens virtual cameras
+        # (DroidCam, OBS, etc.) but only ever returns black frames; DirectShow
+        # reads them correctly. Try it whenever the default backend didn't
+        # already give us a real (non-black) frame.
+        if platform.system() == "Windows" and not _yields_real_frame(cap):
+            dshow_cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            if _yields_real_frame(dshow_cap):
+                cap.release()
+                cap = dshow_cap
+            else:
+                dshow_cap.release()
         return cap, "Webcam", False, False
     if source_arg.startswith(("http://", "https://", "rtsp://")):
         cap = cv2.VideoCapture(source_arg)
@@ -63,6 +93,21 @@ def main() -> None:
     vision = VisionPipeline()
     decision_engine = DecisionEngine()
     speech = SpeechEngine()
+
+    navigator: Optional[navigation.Navigator] = None
+    if args.start and args.end:
+        try:
+            start = _parse_latlon(args.start)
+            end = _parse_latlon(args.end)
+            route = navigation.fetch_route(start, end)
+            if route:
+                navigator = navigation.Navigator(route)
+                print(f"Route loaded ({route.get('provider')}), "
+                      f"{route.get('total_distance_m', 0):.0f} m. Press 'n' to start/pause.")
+            else:
+                print("Navigation not available (no route -- check ORS_API_KEY / GOOGLE_MAPS_API_KEY).")
+        except Exception as exc:  # never let an optional feature block startup
+            print(f"[navigation] setup failed: {exc}")
 
     window_name = "Drishti"
     # On Linux without an X display, cv2.imshow aborts the whole process
@@ -108,6 +153,8 @@ def main() -> None:
 
                 frame = cv2.resize(frame, (config.FRAME_WIDTH, config.FRAME_HEIGHT))
                 now = time.time()
+                dt = now - last_time
+                last_time = now
 
                 try:
                     detections = vision.process_frame(frame, now=now)
@@ -115,8 +162,15 @@ def main() -> None:
                     print(f"[vision] error: {exc}")
                     detections = []
 
+                nav_event = None
+                if navigator is not None:
+                    try:
+                        nav_event = navigator.advance(dt)
+                    except Exception as exc:  # never let an optional feature kill the demo
+                        print(f"[navigation] error: {exc}")
+
                 try:
-                    result = decision_engine.decide(detections, now=now)
+                    result = decision_engine.decide(detections, now=now, nav_event=nav_event)
                     if result.message:
                         speech.say(result.message, result.priority)
                         message, message_time = result.message, now
@@ -130,17 +184,24 @@ def main() -> None:
                               f"closing={d.closing_speed:5.2f}m/s ttc={d.ttc} "
                               f"in_path={d.in_path} side={d.side} approaching={d.approaching}")
 
-                dt = now - last_time
-                last_time = now
                 inst_fps = (1.0 / dt) if dt > 0 else 0.0
                 fps_smoothed = inst_fps if fps_smoothed == 0 else 0.9 * fps_smoothed + 0.1 * inst_fps
                 frame_count += 1
             else:
                 now = time.time()
 
+            nav_info = None
+            if navigator is not None:
+                turn = navigator.next_turn_info()
+                if turn is not None:
+                    instruction, remaining = turn
+                    nav_info = {"instruction": instruction, "remaining_m": remaining,
+                                "progress": navigator.progress_fraction(), "active": navigator.active}
+
             canvas = hud.render(
                 frame, detections, message, message_time, fps_smoothed, mode,
                 decision_engine.decision_log, muted=getattr(speech, "_mute", False), now=now,
+                nav_info=nav_info,
             )
 
             if not headless:
@@ -160,13 +221,37 @@ def main() -> None:
                 speech.repeat_last()
             elif key == ord(' '):
                 paused = not paused
-            elif key in (ord('d'), ord('n')):
-                print("That control is a stretch-goal feature, not built in the core system.")
+            elif key == ord('d'):
+                try:
+                    def _speak_description(text: str) -> None:
+                        speech.say(text, config.PRIORITY_INFO)
+
+                    describe_scene_async(frame, _speak_description)
+                    print("Describing scene...")
+                except Exception as exc:  # never let an optional feature kill the demo
+                    print(f"[describe] error: {exc}")
+            elif key == ord('n'):
+                if navigator is None:
+                    print("Navigation not available (pass --start/--end and set a routing API key).")
+                else:
+                    running = navigator.toggle()
+                    print("Navigation started." if running else "Navigation paused.")
 
             if args.max_frames is not None and frame_count >= args.max_frames:
                 break
 
     finally:
+        try:
+            summary = (f"Session complete. {decision_engine.critical_count} critical alerts, "
+                       f"{decision_engine.obstacle_count} obstacle warnings.")
+            if navigator is not None:
+                summary += f" Route {round(navigator.progress_fraction() * 100)} percent complete."
+            print(summary)
+            speech.say(summary, config.PRIORITY_INFO)
+            time.sleep(2.5)  # give the summary a moment to actually be spoken
+        except Exception as exc:  # never let shutdown reporting crash the exit path
+            print(f"[summary] error: {exc}")
+
         speech.stop()
         cap.release()
         if not headless:
