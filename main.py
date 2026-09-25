@@ -54,9 +54,28 @@ def _parse_latlon(text: str) -> tuple:
     return (float(lat_str), float(lon_str))
 
 
+def _yields_real_frame(cap) -> bool:
+    if not cap.isOpened():
+        return False
+    ok, frame = cap.read()
+    return bool(ok) and frame is not None and frame.any()
+
+
 def open_source(source_arg: str):
     if source_arg.isdigit():
-        cap = cv2.VideoCapture(int(source_arg))
+        index = int(source_arg)
+        cap = cv2.VideoCapture(index)
+        # On Windows, the default MSMF backend often opens virtual cameras
+        # (DroidCam, OBS, etc.) but only ever returns black frames; DirectShow
+        # reads them correctly. Try it whenever the default backend didn't
+        # already give us a real (non-black) frame.
+        if platform.system() == "Windows" and not _yields_real_frame(cap):
+            dshow_cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            if _yields_real_frame(dshow_cap):
+                cap.release()
+                cap = dshow_cap
+            else:
+                dshow_cap.release()
         return cap, "Webcam", False, False
     if source_arg.startswith(("http://", "https://", "rtsp://")):
         cap = cv2.VideoCapture(source_arg)
