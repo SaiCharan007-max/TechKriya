@@ -118,8 +118,38 @@ def _log_line_color(line: str):
     return config.COLOR_TEXT
 
 
+def draw_nav_info(panel: np.ndarray, y: int, nav_info: dict) -> int:
+    """Stretch B: next-turn text + a simple route progress bar (the "mini-map").
+    Returns the y coordinate to continue drawing from."""
+    cv2.line(panel, (16, y), (config.HUD_SIDE_PANEL_WIDTH - 16, y), (80, 80, 80), 1)
+    y += 22
+    label = "ROUTE (running)" if nav_info.get("active") else "ROUTE (paused)"
+    cv2.putText(panel, label, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                (200, 200, 200), 1, cv2.LINE_AA)
+    y += 20
+
+    instruction = nav_info.get("instruction", "")
+    remaining = nav_info.get("remaining_m", 0.0)
+    text = f"Next: {instruction} ({round(remaining)}m)"
+    max_chars = 44
+    for i in range(0, len(text), max_chars):
+        cv2.putText(panel, text[i:i + max_chars], (16, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.42, config.COLOR_TEXT, 1, cv2.LINE_AA)
+        y += 16
+
+    y += 6
+    bar_x0, bar_x1 = 16, config.HUD_SIDE_PANEL_WIDTH - 16
+    cv2.line(panel, (bar_x0, y), (bar_x1, y), (90, 90, 90), 3)
+    progress = max(0.0, min(1.0, nav_info.get("progress", 0.0)))
+    dot_x = int(bar_x0 + (bar_x1 - bar_x0) * progress)
+    cv2.circle(panel, (dot_x, y), 6, (255, 180, 60), -1)
+    y += 20
+    return y
+
+
 def draw_side_panel(fps: float, mode: str, state: str, counts: dict,
-                     decision_log: Iterable[str], muted: bool) -> np.ndarray:
+                     decision_log: Iterable[str], muted: bool,
+                     nav_info: Optional[dict] = None) -> np.ndarray:
     panel = np.full((config.HUD_WINDOW_HEIGHT, config.HUD_SIDE_PANEL_WIDTH, 3),
                      config.COLOR_PANEL_BG, dtype=np.uint8)
 
@@ -150,6 +180,9 @@ def draw_side_panel(fps: float, mode: str, state: str, counts: dict,
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, config.COLOR_TEXT, 1, cv2.LINE_AA)
     y += 30
 
+    if nav_info is not None:
+        y = draw_nav_info(panel, y, nav_info)
+
     cv2.line(panel, (16, y), (config.HUD_SIDE_PANEL_WIDTH - 16, y), (80, 80, 80), 1)
     y += 22
     cv2.putText(panel, "DECISION LOG", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
@@ -173,7 +206,8 @@ def draw_side_panel(fps: float, mode: str, state: str, counts: dict,
 
 def render(frame: np.ndarray, detections: List[Detection], message: Optional[str],
            message_time: Optional[float], fps: float, mode: str,
-           decision_log: Iterable[str], muted: bool, now: Optional[float] = None) -> np.ndarray:
+           decision_log: Iterable[str], muted: bool, now: Optional[float] = None,
+           nav_info: Optional[dict] = None) -> np.ndarray:
     """Compose the full 1000x480 HUD frame."""
     now = time.time() if now is None else now
     cam = frame.copy()
@@ -189,7 +223,7 @@ def render(frame: np.ndarray, detections: List[Detection], message: Optional[str
         "in_path": sum(1 for d in detections if d.in_path),
         "approaching": sum(1 for d in detections if d.approaching),
     }
-    panel = draw_side_panel(fps, mode, state, counts, decision_log, muted)
+    panel = draw_side_panel(fps, mode, state, counts, decision_log, muted, nav_info)
 
     canvas = np.zeros((config.HUD_WINDOW_HEIGHT, config.HUD_WINDOW_WIDTH, 3), dtype=np.uint8)
     canvas[:, :cam.shape[1]] = cam

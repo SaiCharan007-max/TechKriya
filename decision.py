@@ -43,6 +43,8 @@ class DecisionEngine:
         self._suppress_until: float = -1e9
         self._obstacle_active: bool = False
         self.decision_log: Deque[str] = deque(maxlen=config.DECISION_LOG_MAXLEN)
+        self.critical_count: int = 0
+        self.obstacle_count: int = 0
 
     # -- helpers -----------------------------------------------------------
 
@@ -108,6 +110,7 @@ class DecisionEngine:
                 self._track_state[chosen.id] = {"category": "approaching", "distance": chosen.distance}
                 self._last_message_time = now
                 self._suppress_until = now + config.POST_CRITICAL_SUPPRESS_S
+                self.critical_count += 1
                 return DecisionResult(message, config.PRIORITY_CRITICAL, flush=True)
 
             self._track_state[chosen.id] = {"category": "approaching", "distance": chosen.distance}
@@ -144,6 +147,7 @@ class DecisionEngine:
                 self._track_state[chosen.id] = {"category": "obstacle", "distance": chosen.distance}
                 self._last_message_time = now
                 self._obstacle_active = True
+                self.obstacle_count += 1
                 return DecisionResult(message, config.PRIORITY_OBSTACLE, flush=False)
 
             self._track_state[chosen.id] = {"category": "obstacle", "distance": chosen.distance}
