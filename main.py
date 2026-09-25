@@ -2,8 +2,9 @@
 main.py -- Drishti entry point.
 
 Usage:
-    python main.py --source 0                      (webcam)
-    python main.py --source videos/street1.mp4      (looping video file)
+    python main.py --source 0                              (webcam)
+    python main.py --source videos/street1.mp4              (looping video file)
+    python main.py --source http://192.168.1.42:8080/video  (phone via IP Webcam app)
 
 Controls (in the OpenCV window):
     q      quit
@@ -45,14 +46,17 @@ def parse_args() -> argparse.Namespace:
 def open_source(source_arg: str):
     if source_arg.isdigit():
         cap = cv2.VideoCapture(int(source_arg))
-        return cap, "Webcam", False
+        return cap, "Webcam", False, False
+    if source_arg.startswith(("http://", "https://", "rtsp://")):
+        cap = cv2.VideoCapture(source_arg)
+        return cap, "Phone", False, True
     cap = cv2.VideoCapture(source_arg)
-    return cap, "Video", True
+    return cap, "Video", True, False
 
 
 def main() -> None:
     args = parse_args()
-    cap, mode, is_video = open_source(args.source)
+    cap, mode, is_video, is_stream = open_source(args.source)
     if not cap.isOpened():
         raise SystemExit(f"Could not open source: {args.source!r}")
 
@@ -74,6 +78,7 @@ def main() -> None:
     last_time = time.time()
     last_debug_print = 0.0
     frame_count = 0
+    stream_fail_count = 0
 
     print(f"Drishti starting. Source: {args.source} ({mode}). Press 'q' in the window to quit.")
 
@@ -85,8 +90,21 @@ def main() -> None:
                     if is_video:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         continue
+                    if is_stream:
+                        # Wi-Fi phone streams occasionally drop a frame or stall;
+                        # retry a bit before giving up, instead of ending the demo.
+                        stream_fail_count += 1
+                        if stream_fail_count <= 30:
+                            time.sleep(0.05)
+                            continue
+                        print("Reconnecting to phone stream...")
+                        cap.release()
+                        cap = cv2.VideoCapture(args.source)
+                        stream_fail_count = 0
+                        continue
                     print("Source ended.")
                     break
+                stream_fail_count = 0
 
                 frame = cv2.resize(frame, (config.FRAME_WIDTH, config.FRAME_HEIGHT))
                 now = time.time()
